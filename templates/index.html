@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mining Dashboard</title>
+<link href="https://cdn.bootcdn.net/ajax/libs/bootstrap/5.3.3/css/bootstrap.min.css" rel="stylesheet">
+<style>
+:root { --bg: #0f1117; --card: #1a1d27; --border: #262a36; --text: #e0e0e0; --text-dim: #8b8fa3; --accent: #4caf50; --accent-dim: #33691e; --warning: #ff9800; --danger: #f44336; --info: #42a5f5; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--text); font-family: 'Inter', 'Segoe UI', system-ui, sans-serif; min-height: 100vh; }
+.navbar { background: var(--card); border-bottom: 1px solid var(--border); padding: 10px 20px; }
+.navbar-brand { font-weight: 700; font-size: 1.1rem; }
+.navbar .stat-pill { display: inline-flex; align-items: center; gap: 6px; background: rgba(255,255,255,0.04); border: 1px solid var(--border); border-radius: 20px; padding: 4px 14px; font-size: 0.8rem; margin-left: 10px; }
+.navbar .stat-pill .dot { width: 7px; height: 7px; border-radius: 50%; }
+.navbar .stat-pill .dot.online { background: var(--accent); }
+.navbar .stat-pill .dot.offline { background: var(--danger); animation: pulse 1.5s infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+.worker-card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 18px; margin-bottom: 10px; transition: border-color 0.2s; }
+.worker-card:hover { border-color: #3a3f52; }
+.worker-header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.worker-header .status-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.worker-header .status-dot.online { background: var(--accent); box-shadow: 0 0 8px rgba(76,175,80,0.4); }
+.worker-header .status-dot.offline { background: var(--danger); box-shadow: 0 0 8px rgba(244,67,54,0.4); animation: pulse 1.5s infinite; }
+.worker-header .worker-name { font-weight: 700; font-size: 1.05rem; }
+.worker-header .worker-ip { color: var(--text-dim); font-size: 0.8rem; font-family: 'Consolas', monospace; }
+.worker-header .worker-type { font-size: 0.7rem; background: var(--border); border-radius: 4px; padding: 2px 8px; text-transform: uppercase; color: var(--text-dim); }
+.worker-header .worker-uptime { margin-left: auto; font-size: 0.78rem; color: var(--text-dim); }
+.metrics-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 6px; }
+.metric-item { background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.04); border-radius: 6px; padding: 6px 10px; text-align: center; }
+.metric-item .metric-label { font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-dim); margin-bottom: 2px; }
+.metric-item .metric-value { font-size: 0.95rem; font-weight: 700; line-height: 1.2; }
+.metric-item .metric-sub { font-size: 0.62rem; color: var(--text-dim); margin-top: 1px; }
+.worker-actions { display: flex; gap: 8px; margin-bottom: 14px; }
+.worker-actions .btn { font-size: 0.72rem; padding: 3px 12px; border-radius: 6px; font-weight: 500; }
+.btn-outline-danger { border-color: #5c3030; color: #e57373; }
+.btn-outline-danger:hover { background: #5c2020; border-color: #e57373; color: #fff; }
+.btn-outline-success { border-color: #2e5c30; color: #66bb6a; }
+.btn-outline-success:hover { background: #1e3c20; border-color: #66bb6a; color: #fff; }
+.section-header { display: flex; align-items: center; gap: 10px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); margin: 16px 0 8px; font-weight: 600; }
+.section-header::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+.chart-box { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; height: 100%; }
+.chart-box .chart-title { font-size: 0.7rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.8px; margin-bottom: 8px; font-weight: 600; }
+.range-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+.range-bar .btn-group .btn { font-size: 0.7rem; padding: 2px 10px; border-radius: 4px; border-color: var(--border); color: var(--text-dim); }
+.range-bar .btn-group .btn.active { background: var(--accent-dim); border-color: var(--accent); color: #fff; }
+.stats-bar { display: flex; flex-wrap: wrap; gap: 8px 20px; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 10px 18px; margin-bottom: 14px; font-size: 0.75rem; }
+.stats-bar .stat { display: flex; align-items: center; gap: 5px; }
+.stats-bar .s-label { color: var(--text-dim); }
+.stats-bar .s-value { font-weight: 600; }
+@media (max-width: 768px) { .metrics-grid { grid-template-columns: repeat(3, 1fr); } .worker-header .worker-uptime { margin-left: 0; width: 100%; } }
+</style>
+</head>
+<body>
+
+<nav class="navbar d-flex align-items-center">
+  <span class="navbar-brand">&#9883; Mining Dashboard</span>
+  <span class="stat-pill"><span class="dot online" id="navDot"></span><span id="navWorkers">--</span></span>
+  <span class="stat-pill" id="navHash">ASIC: <strong id="navAsicHash">--</strong> &middot; GPU: <strong id="navGpuHash">--</strong></span>
+  <span class="ms-auto text-secondary" style="font-size:0.75rem">{% if sys_info %}{{ sys_info.get('minertype', '?') }} &middot; FW {{ sys_info.get('system_filesystem_version', '?') }}{% endif %}</span>
+</nav>
+
+<div class="container-fluid px-3 py-3">
+
+  <!-- ASIC Card -->
+  <div class="worker-card" id="asicCard">
+    <div class="worker-header">
+      <span class="status-dot" id="asicDot"></span>
+      <span class="worker-name">ASIC Miner</span>
+      <span class="worker-type">D1 MINI</span>
+      <span class="worker-ip">192.168.3.5</span>
+      <span class="worker-uptime" id="vElapsed">--</span>
+    </div>
+    <div class="metrics-grid">
+      <div class="metric-item"><div class="metric-label">Hash 5s</div><div class="metric-value" style="color:var(--warning)" id="vGhs5s">--</div></div>
+      <div class="metric-item"><div class="metric-label">Hash Avg</div><div class="metric-value" style="color:var(--accent)" id="vGhsav">--</div></div>
+      <div class="metric-item"><div class="metric-label">Temp 1</div><div class="metric-value" style="color:var(--warning)" id="vT1">--</div></div>
+      <div class="metric-item"><div class="metric-label">Temp 2</div><div class="metric-value" style="color:#ff6b6b" id="vT2">--</div></div>
+      <div class="metric-item"><div class="metric-label">Fans</div><div class="metric-value" id="vFan">--</div><div class="metric-sub">Fan2 / Fan3</div></div>
+      <div class="metric-item"><div class="metric-label">Accepted</div><div class="metric-value" style="color:var(--accent)" id="vAcc">--</div></div>
+      <div class="metric-item"><div class="metric-label">Rejected</div><div class="metric-value" style="color:var(--danger)" id="vRej">--</div></div>
+      <div class="metric-item"><div class="metric-label">HW Errors</div><div class="metric-value" style="color:var(--danger)" id="vHw">--</div></div>
+    </div>
+  </div>
+
+  <!-- GPU #1 Card -->
+  <div class="worker-card" id="gpuCard">
+    <div class="worker-header">
+      <span class="status-dot" id="gpuDot"></span>
+      <span class="worker-name">GPU #1</span>
+      <span class="worker-type" id="gAlgo">--</span>
+      <span class="worker-ip">192.168.3.6</span>
+      <span class="worker-uptime" id="gpuUptime">--</span>
+    </div>
+    <div class="worker-actions">
+      <button class="btn btn-outline-danger btn-sm" onclick="gpuAction(0,'stop')">Stop</button>
+      <button class="btn btn-outline-success btn-sm" onclick="gpuAction(0,'start')">Start</button>
+      <span id="gpuStatus" class="badge ms-2" style="font-size:0.72rem">Loading</span>
+    </div>
+    <div class="metrics-grid">
+      <div class="metric-item"><div class="metric-label">Hashrate</div><div class="metric-value" style="color:var(--warning);font-size:1.05rem" id="gHash">--</div><div class="metric-sub" id="gHashPool">--</div></div>
+      <div class="metric-item"><div class="metric-label">Temp</div><div class="metric-value" style="color:var(--warning)" id="gTemp">--</div><div class="metric-sub" id="gFan">--</div></div>
+      <div class="metric-item"><div class="metric-label">Power</div><div class="metric-value" style="color:var(--info)" id="gPower">--</div></div>
+      <div class="metric-item"><div class="metric-label">Efficiency</div><div class="metric-value" style="color:var(--accent)" id="gEff">--</div></div>
+      <div class="metric-item"><div class="metric-label">Accepted</div><div class="metric-value" style="color:var(--accent)" id="gAcc">--</div></div>
+      <div class="metric-item"><div class="metric-label">Rejected</div><div class="metric-value" style="color:var(--danger)" id="gRej">--</div><div class="metric-sub" id="gRejPct">--</div></div>
+    </div>
+  </div>
+
+  <!-- GPU #2 Card -->
+  <div class="worker-card" id="gpuLocalCard">
+    <div class="worker-header">
+      <span class="status-dot" id="gpuLocalDot"></span>
+      <span class="worker-name">GPU #2</span>
+      <span class="worker-type" id="gLocalAlgo">--</span>
+      <span class="worker-ip">192.168.3.2</span>
+      <span class="worker-uptime" id="gpuLocalUptime">--</span>
+    </div>
+    <div class="worker-actions">
+      <button class="btn btn-outline-danger btn-sm" onclick="gpuAction(1,'stop')">Stop</button>
+      <button class="btn btn-outline-success btn-sm" onclick="gpuAction(1,'start')">Start</button>
+      <span id="gpuLocalStatus" class="badge ms-2" style="font-size:0.72rem">Loading</span>
+    </div>
+    <div class="metrics-grid">
+      <div class="metric-item"><div class="metric-label">Hashrate</div><div class="metric-value" style="color:var(--warning);font-size:1.05rem" id="gLocalHash">--</div><div class="metric-sub" id="gLocalHashPool">--</div></div>
+      <div class="metric-item"><div class="metric-label">Temp</div><div class="metric-value" style="color:var(--warning)" id="gLocalTemp">--</div><div class="metric-sub" id="gLocalFan">--</div></div>
+      <div class="metric-item"><div class="metric-label">Power</div><div class="metric-value" style="color:var(--info)" id="gLocalPower">--</div></div>
+      <div class="metric-item"><div class="metric-label">Efficiency</div><div class="metric-value" style="color:var(--accent)" id="gLocalEff">--</div></div>
+      <div class="metric-item"><div class="metric-label">Accepted</div><div class="metric-value" style="color:var(--accent)" id="gLocalAcc">--</div></div>
+      <div class="metric-item"><div class="metric-label">Rejected</div><div class="metric-value" style="color:var(--danger)" id="gLocalRej">--</div><div class="metric-sub" id="gLocalRejPct">--</div></div>
+    </div>
+  </div>
+
+  <!-- History -->
+  <div class="section-header">History</div>
+  <div class="range-bar">
+    <div class="btn-group" id="rangeBtns">
+      <button class="btn btn-sm" data-h="0.083">5m</button>
+      <button class="btn btn-sm" data-h="0.25">15m</button>
+      <button class="btn btn-sm active" data-h="0.5">30m</button>
+      <button class="btn btn-sm" data-h="1">1h</button>
+      <button class="btn btn-sm" data-h="6">6h</button>
+      <button class="btn btn-sm" data-h="12">12h</button>
+      <button class="btn btn-sm" data-h="24">1d</button>
+    </div>
+    <span class="text-secondary" style="font-size:0.72rem" id="historyInfo"></span>
+  </div>
+  <div class="stats-bar">
+    <div class="stat"><span class="s-label">Avg Hash:</span><span class="s-value" style="color:var(--accent)" id="sAvgHash">--</span></div>
+    <div class="stat"><span class="s-label">Peak:</span><span class="s-value" style="color:var(--warning)" id="sMaxHash">--</span></div>
+    <div class="stat"><span class="s-label">Max T1:</span><span class="s-value" style="color:var(--warning)" id="sMaxT1">--</span></div>
+    <div class="stat"><span class="s-label">Shares:</span><span class="s-value" style="color:var(--info)" id="sShares">--</span></div>
+    <div class="stat"><span class="s-label">HW:</span><span class="s-value" style="color:var(--danger)" id="sHw">--</span></div>
+  </div>
+  <div class="row g-2 mb-3">
+    <div class="col-12 col-lg-6 mb-2"><div class="chart-box"><div class="chart-title">Hashrate</div><canvas id="cHash"></canvas></div></div>
+    <div class="col-12 col-lg-6 mb-2"><div class="chart-box"><div class="chart-title">Temperature</div><canvas id="cTemp"></canvas></div></div>
+    <div class="col-12 col-lg-6 mb-2"><div class="chart-box"><div class="chart-title">Shares</div><canvas id="cShares"></canvas></div></div>
+    <div class="col-12 col-lg-6 mb-2"><div class="chart-box"><div class="chart-title">HW / 5min</div><canvas id="cHw"></canvas></div></div>
+  </div>
+
+</div>
+
+<script src="https://cdn.bootcdn.net/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<script>
+Chart.defaults.color = '#8b8fa3';
+Chart.defaults.borderColor = '#30363d';
+Chart.defaults.plugins.legend.labels.color = '#c9d1d9';
+
+let histRange = 0.5;
+let histData = [];
+
+function fmt(v, d) { return v != null ? (typeof v === 'number' ? v.toFixed(d||0) : v) : '--'; }
+function fmtHash(v) { return v >= 1e6 ? (v/1e6).toFixed(1)+'TH' : v >= 1000 ? (v/1000).toFixed(1)+'GH' : v.toFixed(1)+'MH'; }
+
+// Chart.js helpers
+function makeChart(id, datasets) {
+  return new Chart(document.getElementById(id), {
+    type: 'line',
+    data: { labels: [], datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: { x: { display: true, ticks: { maxTicksLimit: 8, maxRotation: 0 } }, y: { beginAtZero: false } },
+      plugins: { legend: { position: 'bottom' } },
+      elements: { point: { radius: 0 } },
+    }
+  });
+}
+
+document.querySelectorAll('canvas').forEach(c => c.parentElement.style.height = '220px');
+
+const chHash = makeChart('cHash', [{ label: 'GH/s (5s)', data: [], borderColor: '#d2991d', tension: 0.2 }]);
+const chTemp = makeChart('cTemp', [
+  { label: 'T1', data: [], borderColor: '#ff9800', tension: 0.2 },
+  { label: 'T2', data: [], borderColor: '#ff6b6b', tension: 0.2 }
+]);
+const chShares = makeChart('cShares', [
+  { label: 'Accepted', data: [], borderColor: '#4caf50', tension: 0.2 },
+  { label: 'Rejected', data: [], borderColor: '#f44336', tension: 0.2 }
+]);
+const chHw = makeChart('cHw', [{ label: 'HW Errors', data: [], borderColor: '#f44336', backgroundColor: 'rgba(244,67,54,0.15)', fill: true, tension: 0.2 }]);
+
+// ASIC status refresh
+async function refreshAsic() {
+  try {
+    const r = await fetch('/api/status');
+    if (!r.ok) throw new Error('offline');
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    document.getElementById('asicDot').className = 'status-dot online';
+    document.getElementById('vGhs5s').innerHTML = d.ghs5s_display;
+    document.getElementById('vGhsav').innerHTML = d.ghsav_display;
+    document.getElementById('vT1').textContent = d.temp1 != null ? d.temp1 + '°C' : '--';
+    document.getElementById('vT2').textContent = d.temp2 != null ? d.temp2 + '°C' : '--';
+    document.getElementById('vFan').textContent = (d.fan2||'--') + ' / ' + (d.fan3||'--');
+    document.getElementById('vAcc').textContent = d.accepted;
+    document.getElementById('vRej').textContent = d.rejected;
+    document.getElementById('vHw').textContent = d.hw_total;
+    document.getElementById('vElapsed').textContent = d.elapsed;
+    document.getElementById('navAsicHash').textContent = d.ghsav_display;
+  } catch(e) {
+    document.getElementById('asicDot').className = 'status-dot offline';
+  }
+}
+
+// GPU status refresh
+async function refreshGpu() {
+  try {
+    const r = await fetch('/api/gpu/status');
+    const all = await r.json();
+    let online = 0, totalHash = 0;
+
+    // GPU #1 (index 0)
+    if (all[0] && all[0].success) {
+      const d = all[0];
+      const devices = d.devices || [{}];
+      const dev = devices[0] || {};
+      const hr = dev.hashrate || {};
+      const alg = Object.keys(hr)[0] || '--';
+      const mhs = hr[alg] ? hr[alg] / 1e6 : 0;
+      const poolHr = (dev.pool_hashrate || {});
+      const poolMhs = poolHr[alg] ? poolHr[alg] / 1e6 : 0;
+      const mon = dev.monitoring_info || {};
+      const sol = d.solution_stat || {};
+      const astat = sol[alg] || {};
+      const acc = astat.accepted || 0;
+      const rej = astat.rejected || 0;
+      const total = acc + rej;
+      const rejPct = total > 0 ? (rej/total*100).toFixed(1) + '%' : '0%';
+      online++; totalHash += mhs;
+
+      document.getElementById('gpuDot').className = 'status-dot online';
+      document.getElementById('gAlgo').textContent = alg.toUpperCase();
+      document.getElementById('gHash').textContent = mhs.toFixed(1) + ' MH/s';
+      document.getElementById('gHashPool').textContent = poolMhs.toFixed(1) + ' MH/s pool';
+      document.getElementById('gTemp').textContent = fmt(mon.core_temperature) + '°C';
+      document.getElementById('gFan').textContent = 'Fan ' + fmt(mon.fan_speed) + '%';
+      document.getElementById('gPower').textContent = fmt(mon.power_usage,1) + 'W';
+      document.getElementById('gEff').textContent = d.power_usage > 0 ? (mhs / d.power_usage * 1000).toFixed(1) + ' kH/W' : '--';
+      document.getElementById('gAcc').textContent = acc;
+      document.getElementById('gRej').textContent = rej;
+      document.getElementById('gRejPct').textContent = rejPct;
+      document.getElementById('gpuStatus').textContent = 'Online';
+      document.getElementById('gpuStatus').className = 'badge bg-success';
+      document.getElementById('gpuUptime').textContent = 'Uptime ' + fmt(dev.uptime || d.uptime) + 's';
+    } else {
+      document.getElementById('gpuDot').className = 'status-dot offline';
+      document.getElementById('gpuStatus').textContent = 'Offline';
+      document.getElementById('gpuStatus').className = 'badge bg-danger';
+    }
+
+    // GPU #2 (index 1)
+    if (all[1] && all[1].success) {
+      const d = all[1];
+      const devices = d.devices || [{}];
+      const dev = devices[0] || {};
+      const hr = dev.hashrate || {};
+      const alg = Object.keys(hr)[0] || '--';
+      const mhs = hr[alg] ? hr[alg] / 1e6 : 0;
+      const poolHr = (dev.pool_hashrate || {});
+      const poolMhs = poolHr[alg] ? poolHr[alg] / 1e6 : 0;
+      const mon = dev.monitoring_info || {};
+      const sol = d.solution_stat || {};
+      const astat = sol[alg] || {};
+      const acc = astat.accepted || 0;
+      const rej = astat.rejected || 0;
+      const total = acc + rej;
+      online++; totalHash += mhs;
+
+      document.getElementById('gpuLocalDot').className = 'status-dot online';
+      document.getElementById('gLocalAlgo').textContent = alg.toUpperCase();
+      document.getElementById('gLocalHash').textContent = mhs.toFixed(1) + ' MH/s';
+      document.getElementById('gLocalHashPool').textContent = poolMhs.toFixed(1) + ' MH/s pool';
+      document.getElementById('gLocalTemp').textContent = fmt(mon.core_temperature) + '°C';
+      document.getElementById('gLocalFan').textContent = 'Fan ' + fmt(mon.fan_speed) + '%';
+      document.getElementById('gLocalPower').textContent = fmt(mon.power_usage,1) + 'W';
+      document.getElementById('gLocalEff').textContent = d.power_usage > 0 ? (mhs / d.power_usage * 1000).toFixed(1) + ' kH/W' : '--';
+      document.getElementById('gLocalAcc').textContent = acc;
+      document.getElementById('gLocalRej').textContent = rej;
+      document.getElementById('gLocalRejPct').textContent = total > 0 ? (rej/total*100).toFixed(1) + '%' : '0%';
+      document.getElementById('gpuLocalStatus').textContent = 'Online';
+      document.getElementById('gpuLocalStatus').className = 'badge bg-success';
+    } else {
+      document.getElementById('gpuLocalDot').className = 'status-dot offline';
+      document.getElementById('gpuLocalStatus').textContent = 'Offline';
+      document.getElementById('gpuLocalStatus').className = 'badge bg-danger';
+    }
+
+    document.getElementById('navDot').className = online >= 2 ? 'dot online' : 'dot offline';
+    document.getElementById('navWorkers').textContent = online + '/3 online';
+    document.getElementById('navGpuHash').textContent = totalHash.toFixed(1) + ' MH/s';
+  } catch(e) {
+    document.getElementById('gpuDot').className = 'status-dot offline';
+    document.getElementById('gpuLocalDot').className = 'status-dot offline';
+  }
+}
+
+async function gpuAction(idx, action) {
+  try {
+    const r = await fetch('/api/gpu/' + action + '/' + idx, { method: 'POST' });
+    const d = await r.json();
+    alert(action + ' GPU' + (idx+1) + ': ' + JSON.stringify(d));
+  } catch(e) { alert('Failed: ' + e); }
+}
+
+// History loading
+async function loadHistory() {
+  try {
+    document.getElementById('historyInfo').textContent = 'Loading...';
+    const r = await fetch('/api/history?hours=' + histRange);
+    const j = await r.json();
+    histData = j.data;
+
+    const labels = histData.map(d => d.timestamp.substring(11,19));
+    const ghs5s = histData.map(d => d.ghs5s);
+    const ghsav = histData.map(d => d.ghsav);
+    const t1 = histData.map(d => d.temp1);
+    const t2 = histData.map(d => d.temp2);
+    const acc = histData.map(d => d.accepted);
+    const rej = histData.map(d => d.rejected);
+    const hw = histData.map(d => d.hw_total);
+
+    chHash.data.labels = labels;
+    chHash.data.datasets[0].data = ghs5s;
+    chHash.update();
+
+    chTemp.data.labels = labels;
+    chTemp.data.datasets[0].data = t1;
+    chTemp.data.datasets[1].data = t2;
+    chTemp.update();
+
+    chShares.data.labels = labels;
+    chShares.data.datasets[0].data = acc;
+    chShares.data.datasets[1].data = rej;
+    chShares.update();
+
+    chHw.data.labels = labels;
+    chHw.data.datasets[0].data = hw;
+    chHw.update();
+
+    // Stats
+    const valid = ghsav.filter(v => v > 0);
+    document.getElementById('sAvgHash').textContent = valid.length ? (valid.reduce((a,b)=>a+b,0)/valid.length).toFixed(1) + ' GH/s' : '--';
+    document.getElementById('sMaxHash').textContent = valid.length ? Math.max(...valid).toFixed(1) + ' GH/s' : '--';
+    document.getElementById('sMaxT1').textContent = t1.some(v=>v>0) ? Math.max(...t1.filter(v=>v>0)).toFixed(0) + '°C' : '--';
+    document.getElementById('sShares').textContent = 'A:' + (acc.length?acc[acc.length-1]:'--') + ' / R:' + (rej.length?rej[rej.length-1]:'--');
+    document.getElementById('sHw').textContent = hw.length ? hw[hw.length-1] : '--';
+
+    document.getElementById('historyInfo').textContent = j.total + ' records · ' + (histRange < 1 ? (histRange*60).toFixed(0)+'min' : histRange+'h');
+  } catch(e) {
+    document.getElementById('historyInfo').textContent = 'Failed to load';
+  }
+}
+
+// Range buttons
+document.getElementById('rangeBtns').addEventListener('click', e => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  histRange = parseFloat(btn.dataset.h);
+  document.querySelectorAll('#rangeBtns .btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  loadHistory();
+});
+
+// Initial load
+refreshAsic();
+refreshGpu();
+loadHistory();
+setInterval(refreshAsic, 3000);
+setInterval(refreshGpu, 15000);
+</script>
+</body>
+</html>

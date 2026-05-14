@@ -1,0 +1,18 @@
+{
+  "asic": {
+    "ip": "192.168.3.5",
+    "user": "root",
+    "password": "ltc@dog"
+  },
+  "gpu_miners": [
+    {"host": "192.168.3.6", "port": 5002, "rigel_port": 5000, "name": "GPU #1"},
+    {"host": "192.168.3.2", "port": 5002, "rigel_port": 5000, "name": "GPU #2"}
+  ],
+  "database": {
+    "path": "miner_data.db"
+  },
+  "server": {
+    "host": "0.0.0.0",
+    "port": 5000
+  }
+}
