@@ -1,34 +1,31 @@
 #!/usr/bin/env python3
-"""Mining Dashboard v2.1 — ASIC + GPU unified monitor."""
+"""Mining Dashboard v3 — unified monitoring with syslog, structured APIs."""
 
 import json
 import os
+import re
 import socket
 import sqlite3
+import subprocess
+import sys
 import threading
-import webbrowser
 import time
+import webbrowser
 from datetime import datetime, timedelta
 
-import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 import requests
 from requests.auth import HTTPDigestAuth
 from flask import Flask, g, jsonify, render_template, request
 
-try:
-    from config import load as load_config, create_default
-except ImportError:
-    def load_config():
-        raise RuntimeError("config module not found")
-    def create_default():
-        pass
-
+from config import load as load_config, create_default
 from monitor_miner import parse_status, parse_system, num, ghs
+from syslog import get_syslog
 
+# ---- Init ----
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# ---- Config ----
 try:
     _cfg = load_config()
 except Exception:
@@ -46,6 +43,7 @@ DB_PATH = os.path.join(BASE_DIR, _db_cfg.get("path", "miner_data.db"))
 GPU_MINERS = _cfg.get("gpu_miners", [])
 
 app = Flask(__name__)
+_syslog = get_syslog(_cfg.get("syslog", {}))
 
 # ---- Database ----
 _db_lock = threading.Lock()
@@ -58,6 +56,7 @@ def get_db():
         db = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES)
         db.row_factory = sqlite3.Row
         db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA busy_timeout=5000")
         _local.db = db
     return db
 
@@ -96,7 +95,7 @@ def init_db():
                     timestamp TEXT NOT NULL,
                     idx INTEGER,
                     mhs REAL, temp INTEGER, power REAL, fan INTEGER,
-                    acc INTEGER, rej INTEGER, eff REAL
+                    acc INTEGER, rej INTEGER, eff REAL, latency_ms REAL
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_gpu_ts ON gpu_log(timestamp)")
@@ -113,51 +112,78 @@ def cleanup_old_data():
 
 
 # ---- GPU helpers ----
-def _gpu_url(idx):
-    if idx < len(GPU_MINERS):
-        g = GPU_MINERS[idx]
-        return f"http://{g['host']}:{g.get('port', 5002)}"
-    return None
-
-
 def _gpu_get(idx):
     if idx >= len(GPU_MINERS):
         return {"success": False, "error": "not configured"}
     g = GPU_MINERS[idx]
-    host = g['host']
-    agent_port = g.get('port', 5002)
-    rigel_port = g.get('rigel_port', 5000)
+    host = g["host"]
+    agent_port = g.get("port", 5002)
+    rigel_port = g.get("rigel_port", 5000)
 
     # Try GPU agent first
     try:
         r = requests.get(f"http://{host}:{agent_port}/status", timeout=5)
         if r.status_code == 200:
-            return r.json()
+            data = r.json()
+            if data.get("success"):
+                data["host"] = host
+                data["gpu_name"] = g.get("name", f"GPU #{idx+1}")
+                return data
     except Exception:
         pass
 
-    # Fallback: query Rigel API directly
+    # Fallback: Rigel API directly
     try:
         r = requests.get(f"http://{host}:{rigel_port}", timeout=8)
         if r.status_code == 200:
-            raw = r.json()
-            # Rigel API returns flat, wrap for compatibility
-            return {"success": True, **raw}
+            data = r.json()
+            data["success"] = True
+            data["host"] = host
+            data["gpu_name"] = g.get("name", f"GPU #{idx+1}")
+            return data
     except Exception:
         pass
 
-    return {"success": False, "error": f"{host} unreachable"}
+    return {"success": False, "error": f"{host} unreachable", "host": host}
 
 
 def _gpu_action(idx, action):
-    url = _gpu_url(idx)
-    if not url:
+    if idx >= len(GPU_MINERS):
         return {"success": False, "error": "not configured"}
+    g = GPU_MINERS[idx]
+    host = g["host"]
+    agent_port = g.get("port", 5002)
+
+    # Try GPU agent first
     try:
-        r = requests.post(f"{url}/{action}", timeout=8)
-        return r.json()
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+        r = requests.post(f"http://{host}:{agent_port}/{action}", timeout=8)
+        if r.status_code == 200:
+            result = r.json()
+            _syslog.info("system", f"GPU{idx+1} {action}: {result.get('message', 'ok')}")
+            return result
+    except Exception:
+        pass
+
+    # Fallback: remote schtasks
+    ssh_user = g.get("ssh_user", "")
+    ssh_pwd = g.get("ssh_password", "")
+    task_name = g.get("task_name", "RigelMiner")
+
+    if ssh_user:
+        try:
+            if action == "start":
+                cmd = f'schtasks /run /s {host} /u {ssh_user} /p {ssh_pwd} /tn "{task_name}"'
+            else:
+                cmd = f'schtasks /end /s {host} /u {ssh_user} /p {ssh_pwd} /tn "{task_name}"'
+            result = subprocess.run(cmd, shell=True, capture_output=True, timeout=15)
+            ok = result.returncode == 0
+            msg = f"GPU{idx+1} {action} via schtasks: {'ok' if ok else 'failed'}"
+            _syslog.info("system", msg)
+            return {"success": ok, "message": msg}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    return {"success": False, "error": "no control method available"}
 
 
 # ---- Routes ----
@@ -180,6 +206,7 @@ def api_status():
         r = requests.get(f"{BASE_URL}/cgi-bin/get_miner_statusV1.cgi", auth=auth, timeout=5)
         data = parse_status(r.text)
     except Exception:
+        _syslog.warn("network", "ASIC miner unreachable", f"host={_asic['ip']}")
         return jsonify({"error": "miner offline"}), 502
 
     if not data:
@@ -221,8 +248,15 @@ def api_status():
     except Exception:
         pass
 
+    # Syslog checks
+    if ghsav < 100:
+        _syslog.warn("hashrate", "ASIC hashrate very low", f"{ghsav:.0f} GH/s")
+    if hw_total > 0 and elapsed and "m" in elapsed:
+        _syslog.info("hardware", f"ASIC HW errors: {hw_total}", f"uptime={elapsed}")
+
     return jsonify({
-        "timestamp": now, "ghs5s": ghs5s, "ghsav": ghsav,
+        "timestamp": now,
+        "ghs5s": ghs5s, "ghsav": ghsav,
         "ghs5s_display": ghs(ghs5s), "ghsav_display": ghs(ghsav),
         "temp1": t1, "temp2": t2, "hw_total": hw_total,
         "fan2": fan2, "fan3": fan3, "elapsed": elapsed,
@@ -234,7 +268,13 @@ def api_status():
 def api_gpu_status():
     results = []
     for i in range(len(GPU_MINERS)):
-        results.append(_gpu_get(i))
+        g = _gpu_get(i)
+        results.append(g)
+
+        if not g.get("success"):
+            _syslog.warn("network", f"GPU{i+1} unreachable",
+                         f"host={GPU_MINERS[i]['host']}")
+
     return jsonify(results)
 
 
@@ -250,28 +290,43 @@ def api_gpu_stop(idx):
 
 @app.route("/api/history")
 def api_history():
-    hours = request.args.get("hours", 24, type=float)
+    hours = request.args.get("hours", 0.5, type=float)
     cap = min(hours, 720)
     since = (datetime.now() - timedelta(hours=cap)).isoformat()
 
     db = get_db()
     rows = db.execute(
-        "SELECT * FROM miner_status WHERE timestamp >= ? ORDER BY id ASC", (since,)
+        "SELECT * FROM miner_status WHERE timestamp >= ? ORDER BY id ASC",
+        (since,)
     ).fetchall()
 
     total = len(rows)
     MAX_POINTS = 2000
     if total > MAX_POINTS:
-        rows = rows[:: total // MAX_POINTS]
+        step = total // MAX_POINTS
+        rows = rows[::step]
 
     data = [{
-        "timestamp": r["timestamp"], "ghs5s": r["ghs5s"], "ghsav": r["ghsav"],
-        "temp1": r["temp1"], "temp2": r["temp2"], "hw_total": r["hw_total"],
-        "fan2": r["fan2"], "fan3": r["fan3"], "elapsed": r["elapsed"],
+        "timestamp": r["timestamp"],
+        "ghs5s": r["ghs5s"], "ghsav": r["ghsav"],
+        "temp1": r["temp1"], "temp2": r["temp2"],
+        "hw_total": r["hw_total"],
+        "fan2": r["fan2"], "fan3": r["fan3"],
+        "elapsed": r["elapsed"],
         "accepted": r["accepted"], "rejected": r["rejected"],
     } for r in rows]
 
     return jsonify({"data": data, "total": total, "hours": cap})
+
+
+@app.route("/api/syslog")
+def api_syslog():
+    try:
+        timeline = _syslog.get_timeline(60)
+        summary = _syslog.get_summary()
+        return jsonify({"timeline": timeline, "summary": summary})
+    except Exception as e:
+        return jsonify({"timeline": [], "summary": {}, "error": str(e)})
 
 
 @app.route("/api/health")
@@ -279,55 +334,71 @@ def api_health():
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
-        row = conn.execute("SELECT COUNT(*) as cnt, MAX(timestamp) as last_ts, AVG(ghsav) as avg_hash FROM miner_status").fetchone()
+        row = conn.execute(
+            "SELECT COUNT(*) as cnt, MAX(timestamp) as last_ts, AVG(ghsav) as avg_hash FROM miner_status"
+        ).fetchone()
         db_size = os.path.getsize(DB_PATH) if os.path.exists(DB_PATH) else 0
         conn.close()
         return jsonify({
-            "status": "ok", "db_records": row["cnt"], "db_size_mb": round(db_size / 1048576, 2),
-            "last_record": row["last_ts"], "avg_ghsav": round(row["avg_hash"] or 0, 2),
+            "status": "ok",
+            "db_records": row["cnt"],
+            "db_size_mb": round(db_size / 1048576, 2),
+            "last_record": row["last_ts"],
+            "avg_ghsav": round(row["avg_hash"] or 0, 2),
         })
     except Exception as e:
         return jsonify({"status": "error", "error": str(e)})
 
 
-# ---- GPU collector ----
+# ---- GPU data collector ----
 def gpu_collector_loop():
+    """Periodically collect GPU data into gpu_log."""
     while True:
         for i in range(len(GPU_MINERS)):
             try:
-                resp = _gpu_get(i)
-                if resp.get("success"):
-                    db = sqlite3.connect(DB_PATH)
-                    db.row_factory = sqlite3.Row
-                    devices = resp.get("devices", [{}])
-                    d = devices[0] if devices else {}
-                    hr = d.get("hashrate", {})
-                    mhs = list(hr.values())[0] / 1e6 if hr else 0
-                    monitor = d.get("monitoring_info", {})
-                    sol = resp.get("solution_stat", {})
-                    alg = list(sol.keys())[0] if sol else "unknown"
-                    pool_hr = d.get("pool_hashrate", {})
-                    pool_mhs = list(pool_hr.values())[0] / 1e6 if pool_hr else 0
-                    eff = (pool_mhs / resp.get("power_usage", 1)) * 1000 if resp.get("power_usage", 0) > 0 else 0
+                g = _gpu_get(i)
+                if not g.get("success"):
+                    continue
 
-                    with _db_lock:
-                        db.execute("""
-                            INSERT INTO gpu_log (timestamp, idx, mhs, temp, power, fan, acc, rej, eff)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """, (datetime.now().isoformat(), i, mhs,
-                             monitor.get("core_temperature"),
-                             monitor.get("power_usage"),
-                             monitor.get("fan_speed"),
-                             sol.get(alg, {}).get("accepted", 0) if alg != "unknown" else 0,
-                             sol.get(alg, {}).get("rejected", 0) if alg != "unknown" else 0,
-                             round(eff, 1)))
-                        db.commit()
-                    db.close()
+                dev = (g.get("devices") or [{}])[0] or {}
+                hr = dev.get("hashrate", {})
+                alg = list(hr.keys())[0] if hr else ""
+                mhs = hr.get(alg, 0) / 1e6 if alg else 0
+                mon = dev.get("monitoring_info", {})
+                sol = (g.get("solution_stat") or {}).get(alg, {})
+
+                pools = g.get("pools", {})
+                pool_list = pools.get(alg, [])
+                latency = pool_list[0].get("average_latency_ms") if pool_list else None
+
+                with _db_lock:
+                    conn = sqlite3.connect(DB_PATH)
+                    conn.execute("""
+                        INSERT INTO gpu_log (timestamp, idx, mhs, temp, power, fan, acc, rej, eff, latency_ms)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        datetime.now().isoformat(), i, round(mhs, 2),
+                        mon.get("core_temperature"),
+                        mon.get("power_usage"),
+                        mon.get("fan_speed"),
+                        sol.get("accepted", 0), sol.get("rejected", 0),
+                        round(mhs / mon.get("power_usage", 1) * 1000, 1) if mon.get("power_usage", 0) > 0 else 0,
+                        latency
+                    ))
+                    conn.commit()
+                    conn.close()
+
+                # Syslog checks
+                if latency and latency > 500:
+                    _syslog.warn("pool", f"GPU{i+1} high latency: {latency:.0f}ms")
+                if g.get("miner_running") is False and dev.get("state") != "mining":
+                    pass  # normal during DAG gen
             except Exception:
                 pass
         time.sleep(30)
 
 
+# ---- Main ----
 if __name__ == "__main__":
     init_db()
     cleanup_old_data()
@@ -345,24 +416,26 @@ if __name__ == "__main__":
         lan_ip = "0.0.0.0"
 
     print("=" * 55)
-    print("  Mining Dashboard v2.1")
+    print("  Mining Dashboard v3")
     print(f"  Local:   http://localhost:{port}")
     print(f"  Network: http://{lan_ip}:{port}")
     for i, g in enumerate(GPU_MINERS):
-        print(f"  GPU{i+1} agent: http://{g['host']}:{g.get('port', 5002)}")
+        print(f"  GPU{i+1}: {g['host']} ({g.get('name', 'unknown')})")
+    print(f"  SysLog:  {_syslog._log_path}")
     print("=" * 55)
+
+    _syslog.info("system", "Dashboard starting", f"v3.0 port={port}")
 
     collector = threading.Thread(target=gpu_collector_loop, daemon=True)
     collector.start()
 
-    if os.environ.get("WERKZEUG_RUN_MAIN") == "true" or not os.environ.get("FLASK_RUN_FROM_CLI"):
+    if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
         webbrowser.open(f"http://localhost:{port}")
 
     try:
         from waitress import serve
-        print("Running with waitress (production mode)")
+        print("Running with waitress")
         serve(app, host=host, port=port)
     except ImportError:
-        print("WARNING: waitress not installed, falling back to Flask dev server")
-        print("Install with: pip install waitress")
+        print("WARNING: waitress not installed")
         app.run(host=host, port=port, debug=False)

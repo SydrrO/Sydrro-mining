@@ -1,8 +1,10 @@
 import socket, threading
+
 LOCAL_HOST = "0.0.0.0"
 LOCAL_PORT = 16900
 REMOTE_HOST = "172.65.190.98"  # cfx.f2pool.com
 REMOTE_PORT = 6800
+
 def pipe(src, dst):
     try:
         while True:
@@ -10,6 +12,7 @@ def pipe(src, dst):
             if not data: break
             dst.sendall(data)
     except: pass
+
 def handle(client_sock, addr):
     remote = None
     try:
@@ -29,6 +32,7 @@ def handle(client_sock, addr):
         if remote:
             try: remote.close()
             except: pass
+
 s = socket.socket()
 s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 s.bind((LOCAL_HOST, LOCAL_PORT)); s.listen(50)

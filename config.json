@@ -6,7 +6,7 @@
   },
   "gpu_miners": [
     {"host": "192.168.3.6", "port": 5002, "rigel_port": 5000, "name": "GPU #1"},
-    {"host": "192.168.3.2", "port": 5002, "rigel_port": 5000, "name": "GPU #2"}
+    {"host": "192.168.3.2", "port": 5002, "rigel_port": 5000, "name": "GPU #2", "ssh_user": "25030", "ssh_password": "", "task_name": "RigelMiner"}
   ],
   "database": {
     "path": "miner_data.db"
